@@ -72,14 +72,45 @@ risk_assessor       → read_data_tool
 
 ### Prerequisites
 
+> Developed and tested on macOS (Homebrew). Linux should work identically. Windows instructions are included but untested. WSL2 is the most reliable path there.
+
 | Requirement | Notes |
 |---|---|
 | Python `>=3.10, <3.14` | 3.12.x recommended |
-| Redis | Running on `localhost:6379` |
-| MongoDB | Running on `localhost:27017` |
+| Redis | Must be running as a system service on `localhost:6379` |
+| MongoDB | Must be running as a system service on `localhost:27017` |
 | SerperDev API Key | Free tier at [serper.dev](https://serper.dev) |
 
-> **⚠️ Python version note:** `crewai==0.130.0` requires Python `<3.14` so pin it:
+> **Important:** The Python packages (`redis`, `pymongo`, `motor`) are client libraries — they connect to Redis and MongoDB but can't start them. You need to install and run the actual services at the OS level first.
+>
+> Celery uses Redis as both its message broker (job queue) and result backend. Celery handles the Redis connection internally using the `REDIS_URL` you provide.
+
+**macOS (Homebrew):**
+
+```bash
+# Redis
+brew install redis
+brew services start redis
+
+# MongoDB
+brew tap mongodb/brew
+brew install mongodb-community
+brew services start mongodb-community
+```
+
+To stop them later: `brew services stop redis` / `brew services stop mongodb-community`
+
+**Windows:**
+
+Redis doesn't have an official Windows build. The recommended options are:
+
+- **WSL2** (simplest): install Ubuntu via WSL, then `sudo apt install redis-server && sudo service redis-server start`
+- **Docker**: `docker run -d -p 6379:6379 redis` / `docker run -d -p 27017:27017 mongodb`
+- **Memurai**: a Redis-compatible Windows-native alternative at [memurai.com](https://www.memurai.com)
+
+For MongoDB on Windows: download the MSI installer from [mongodb.com/try/download/community](https://www.mongodb.com/try/download/community). During install, select "Run service as Network Service user" — it'll start automatically on boot.
+
+> **Python version note:** `crewai==0.130.0` requires Python `<3.14`. On newer macOS this may not be your default — pin it:
 > ```bash
 > pyenv install 3.12.2 && pyenv local 3.12.2
 > ```
@@ -108,9 +139,26 @@ cp .env.example .env
 OPENAI_API_KEY=your_openai_api_key_here
 SERPER_API_KEY=your_serper_api_key_here
 REDIS_URL=redis://localhost:6379/0
-MONGODB_URL=mongodb://localhost:27017
-PYTHONPATH=.
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB_NAME=financial_analyzer
 ```
+
+Jobs are stored in the `financial_analyzer` database under a `jobs` collection. Each document looks like this:
+
+```json
+{
+  "job_id": "uuid",
+  "status": "pending | processing | done | failed",
+  "filename": "tesla-q2-2025.pdf",
+  "query": "What are the key risks?",
+  "result": "...",
+  "error": null,
+  "created_at": "2026-02-27T12:08:14Z",
+  "completed_at": "2026-02-27T12:09:59Z"
+}
+```
+
+MongoDB creates the database and collection automatically on first insert — no setup or migrations needed.
 
 ### Run
 
@@ -264,24 +312,11 @@ pip install -r requirements.lock --no-deps
 
 ## Queue Worker & Database
 
-The assignment asked for Redis + Celery to handle concurrent requests so that was implemented as well. Multiple users can submit PDFs at the same time; each request becomes an independent Celery task with its own job ID tracked in MongoDB. The API responds in under 100ms regardless of how many jobs are in flight — analysis runs entirely in the background.
+The assignment asked for Redis + Celery to handle concurrent requests — that's what's here. Multiple users can submit PDFs at the same time; each request becomes an independent Celery task with its own job ID tracked in MongoDB. The API responds in under 100ms regardless of how many jobs are in flight — analysis runs entirely in the background.
 
 ```
 POST /analyze  →  save file, enqueue job, return job_id  (<100ms)
 GET /results/{job_id}  →  poll MongoDB until status is "done"
-```
-
-Jobs track their full lifecycle:
-
-```json
-{
-  "job_id": "uuid",
-  "status": "pending | processing | done | failed",
-  "query": "What are the key risks?",
-  "result": "...",
-  "created_at": "2026-02-27T12:08:14Z",
-  "completed_at": "2026-02-27T12:09:59Z"
-}
 ```
 
 **Why two MongoDB drivers?** FastAPI uses **Motor** (async) — a sync driver would block the event loop. Celery uses **PyMongo** (sync) — Motor binds to an event loop at creation, which doesn't exist in forked Celery worker processes.
@@ -290,7 +325,7 @@ Jobs track their full lifecycle:
 
 ## Frontend
 
-`index.html` is a single-file dark-mode UI — no install, no build step. Open it directly in a browser while the API is running. Built with LLM to make testing easier without touching `curl`.
+`index.html` is a single-file dark-mode UI — no install, no build step. Open it directly in a browser while the API is running. Built with LLM assistance to make testing easier without touching `curl`.
 
 **Features:** drag-and-drop upload · preset query buttons · live polling with agent step view · word count and duration stats · one-click copy
 
@@ -323,7 +358,7 @@ The API endpoint defaults to `http://localhost:8000` and can be changed from the
 
 **No auth.** There's no authentication layer — don't expose the API publicly without adding one.
 
-**CORS is localhost-only.** `index.html` is hosted on GitHub Pages for demo purposes before prod needs to be configured properly
+**CORS is open.** `allow_origins=["*"]` is already set in `main.py` so the frontend works from any origin including GitHub Pages. Fine for local dev — add restrictions if you ever expose this publicly.
 
 ---
 
