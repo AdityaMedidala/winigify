@@ -1,8 +1,8 @@
 # Financial Document Analyzer
 
-An AI system that reads financial PDFs and answers questions about them — grounded strictly in what the document says. No hallucinations, no speculation.
+Upload a financial PDF, ask a question, get a grounded answer. Four AI agents read the document and work through it in sequence — no hallucinated figures, no speculation.
 
-Built with **CrewAI · FastAPI · Celery · Redis · MongoDB · OpenAI GPT-4o-mini · SerperDev**
+Built with **CrewAI · FastAPI · Celery · Redis · MongoDB · GPT-4o-mini · SerperDev**
 
 ---
 
@@ -14,6 +14,7 @@ Built with **CrewAI · FastAPI · Celery · Redis · MongoDB · OpenAI GPT-4o-mi
 - [API Reference](#api-reference)
 - [Bugs Fixed](#bugs-fixed)
 - [Dependency Resolution](#dependency-resolution)
+- [Queue Worker & Database](#queue-worker--database)
 - [Frontend](#frontend)
 - [Limitations](#limitations)
 - [Project Structure](#project-structure)
@@ -22,14 +23,14 @@ Built with **CrewAI · FastAPI · Celery · Redis · MongoDB · OpenAI GPT-4o-mi
 
 ## What it does
 
-Upload a financial PDF (like a quarterly earnings report) and ask a question. Four agents work through it in sequence:
+Upload any financial PDF — earnings report, annual filing, 10-K — and ask a question. Four agents work through it sequentially:
 
 | Agent | Role |
 |---|---|
 | **Senior Financial Analyst** | Reads the document + fetches market context via Serper. Answers the query using only grounded data. |
 | **Financial Verifier** | Reviews the analyst's answer and flags anything not supported by the document. |
-| **Investment Advisor** | Reads the document directly to extract metrics (revenue, margins, growth) and produce grounded investment observations. |
-| **Risk Assessor** | Reads the document directly to identify risk factors explicitly stated in the filing — no invented scenarios. |
+| **Investment Advisor** | Reads the document directly to extract metrics (revenue, margins, growth) for grounded investment observations. |
+| **Risk Assessor** | Reads the document directly to identify risk factors explicitly stated in the filing. No invented scenarios. |
 
 ---
 
@@ -56,7 +57,7 @@ flowchart TD
 
 **Why the verifier has no tools:** In `Process.sequential`, each task's output is automatically passed as context to the next agent — so the verifier reads the analyst's answer directly without re-opening the PDF. Giving it `read_data_tool` caused a duplicate-input loop (see Bug 15).
 
-**Why `investment_advisor` and `risk_assessor` read the PDF directly:** The verifier's output is a high-level confirmation, not a data extract. Without direct PDF access, downstream agents had no actual figures and hallucinated numbers — claiming 45% gross margin when the real figure was 17.2%, for example. Assigning `read_data_tool` at the agent level means every claim traces back to the source text.
+**Why `investment_advisor` and `risk_assessor` read the PDF directly:** The verifier's output is a short confirmation, not a data extract. Without direct PDF access, downstream agents had no actual figures and hallucinated — claiming 45% gross margin when the real figure was 17.2%. Assigning `read_data_tool` at the agent level means every claim traces back to the source document.
 
 ```
 financial_analyst   → read_data_tool + search_tool (Serper)
@@ -73,12 +74,12 @@ risk_assessor       → read_data_tool
 
 | Requirement | Notes |
 |---|---|
-| Python `>=3.10, <3.14` | 3.12.x recommended. See note below. |
+| Python `>=3.10, <3.14` | 3.12.x recommended |
 | Redis | Running on `localhost:6379` |
 | MongoDB | Running on `localhost:27017` |
 | SerperDev API Key | Free tier at [serper.dev](https://serper.dev) |
 
-> **Python version:** `crewai==0.130.0` requires Python `<3.14`. On newer macOS, 3.14+ may be the default — pin it:
+> **⚠️ Python version note:** `crewai==0.130.0` requires Python `<3.14` so pin it:
 > ```bash
 > pyenv install 3.12.2 && pyenv local 3.12.2
 > ```
@@ -95,7 +96,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.lock --no-deps
 ```
 
-> **Why `--no-deps` with a lockfile?** The CrewAI + LangChain + Google SDK dependency graph is large enough to cause pip's resolver to fail. The lockfile captures an already-resolved environment. `--no-deps` skips re-solving and installs exactly what's listed. See [Dependency Resolution](#dependency-resolution).
+> **Why `--no-deps`?** The CrewAI + LangChain + Google SDK dependency graph is large enough to break pip's resolver. The lockfile already captures a working resolved environment — `--no-deps` installs it as-is without re-solving. See [Dependency Resolution](#dependency-resolution).
 
 ### Environment
 
@@ -117,15 +118,15 @@ PYTHONPATH=.
 # Terminal 1 — API server
 make api
 
-# Terminal 2 — Background worker
+# Terminal 2 — Celery worker
 make worker
 ```
 
 Without Make:
 
 ```bash
-PYTHONPATH=$PWD uvicorn main:app --reload           # Terminal 1
-PYTHONPATH=$PWD celery -A worker:celery_app worker --loglevel=info  # Terminal 2
+PYTHONPATH=$PWD uvicorn main:app --reload
+PYTHONPATH=$PWD celery -A worker:celery_app worker --loglevel=info
 ```
 
 **Sample document:** Download Tesla's Q2 2025 filing [here](https://www.tesla.com/sites/default/files/downloads/TSLA-Q2-2025-Update.pdf) and save as `data/sample.pdf`, or upload any financial PDF via the API.
@@ -136,7 +137,7 @@ PYTHONPATH=$PWD celery -A worker:celery_app worker --loglevel=info  # Terminal 2
 
 ### `POST /analyze`
 
-Upload a PDF and submit a question. Returns a job ID immediately — processing runs in the background.
+Upload a PDF and submit a question. Returns a job ID immediately — analysis runs in the background.
 
 ```bash
 curl -X POST http://localhost:8000/analyze \
@@ -154,7 +155,7 @@ curl -X POST http://localhost:8000/analyze \
 
 ### `GET /results/{job_id}`
 
-Poll for your result. Typically ready in **1–2 minutes** (four agents run sequentially, each making LLM calls). See [Limitations](#limitations) for detail.
+Poll for results. Usually ready in 1–2 minutes — see [Limitations](#limitations).
 
 ```bash
 curl http://localhost:8000/results/5a34ff46-aa7c-48e1-ae1b-2ca2192cbfdc
@@ -174,71 +175,66 @@ curl http://localhost:8000/results/5a34ff46-aa7c-48e1-ae1b-2ca2192cbfdc
 
 ### `GET /`
 
-Health check.
-
-```bash
-curl http://localhost:8000/
-# { "message": "Financial Document Analyzer API is running" }
-```
+Health check — `{ "message": "Financial Document Analyzer API is running" }`
 
 ---
 
 ## Bugs Fixed
 
-17 bugs total across two categories. See [`BUGS.md`](BUGS.md) for full detail on each.
+17 bugs total. See [`bugs.md`](bugs.md) for the full breakdown with diffs and context.
 
 ### Category 1 — Crashes & Hard Failures
 
 | # | File | Bug | Fix |
 |---|---|---|---|
-| 1 | `README.md` | `requirement.txt` typo — file not found on install | Corrected to `requirements.txt` |
-| 2 | `agents.py` | `from crewai.agents import Agent` — invalid import path in 0.130.0 | `from crewai import Agent` |
+| 1 | `README.md` | `requirement.txt` typo — install fails with file not found | Corrected to `requirements.txt` |
+| 2 | `agents.py` | `from crewai.agents import Agent` — invalid path in 0.130.0 | `from crewai import Agent` |
 | 3 | `agents.py` | `llm = llm` before `llm` is defined — `NameError` on import | Removed; CrewAI reads `OPENAI_API_KEY` automatically |
 | 4 | `agents.py` | `Agent(tool=[...])` — wrong field name, Pydantic rejects it | `Agent(tools=[...])` |
 | 5 | `agents.py` | `memory=True` on Agent — moved to Crew-level in 0.130.0, causes `ValidationError` | Removed from all agents |
 | 6 | `tools.py` | `read_data_tool` defined inside a plain class with no `@tool` decorator — agents can't invoke it | Removed class wrapper, added `@tool` |
-| 7 | `tools.py` | Tool defined as `async def` — CrewAI is sync; returns unawaited coroutine | Converted to regular `def` |
+| 7 | `tools.py` | Tool defined as `async def` — CrewAI is sync, returns unawaited coroutine | Converted to regular `def` |
 | 8 | `tools.py` | `Pdf` class used but never imported — `NameError` at runtime | Replaced with `PyPDFLoader` from LangChain |
 | 9 | `tools.py` | `@tool` imported from `crewai_tools` — wrong package | `from crewai.tools import tool` |
-| 10 | `main.py` | Route handler named `analyze_financial_document` — overwrites the Task import of the same name | Renamed route to `api_financial_document` |
+| 10 | `main.py` | Route handler named `analyze_financial_document` — overwrites the Task import of the same name | Renamed to `api_financial_document` |
 | 11 | `main.py` | Hardcoded `data/sample.pdf` regardless of uploaded file; outdated kickoff syntax | `crew.kickoff(inputs={'query': query, 'file_path': file_path})` |
-| 12 | `requirements.txt` | Missing `python-multipart` — FastAPI can't parse file uploads | Added to dependencies |
+| 12 | `requirements.txt` | Missing `python-multipart` — FastAPI can't parse file uploads without it | Added to dependencies |
 | 13 | `main.py` | `uvicorn.run(app, ...)` — live object causes reloader to exit immediately | `uvicorn.run("main:app", ...)` |
-| 14 | `task.py` | Task descriptions don't include `{file_path}` — agents guess filenames and hallucinate | Added explicit file path instruction to all task descriptions |
-| 15 | `task.py` + `agents.py` | Verification task assigned to `financial_analyst` (same agent, same tool, same path) — hits duplicate-input guard, burns RPM tokens in an infinite loop | Reassigned to `verifier` agent with no tools |
-| 16 | `main.py` | File saved with relative path — Celery's working directory differs from uvicorn's, file not found | `os.path.abspath()` on save path |
-| 17 | `agents.py` + `task.py` | `investment_advisor` re-calls `read_data_tool` on iteration 2 — duplicate-input guard blocks it; with `max_iter=2` no recovery possible, loops forever | Raised `max_iter` to 4; added explicit "do not re-call the tool" instruction |
+| 14 | `task.py` | Task descriptions don't include `{file_path}` — agents guess filenames and hallucinate paths | Added explicit file path instruction to all task descriptions |
+| 15 | `task.py` + `agents.py` | Verification task assigned to `financial_analyst` — same agent, same tool, same input path hits duplicate-input guard and loops indefinitely | Reassigned to `verifier` agent with no tools |
+| 16 | `main.py` | File saved with a relative path — Celery's working directory differs from uvicorn's, so the file isn't found | Used `os.path.abspath()` when saving |
+| 17 | `agents.py` + `task.py` | `investment_advisor` re-calls `read_data_tool` on iteration 2 — duplicate-input guard blocks it, and with `max_iter=2` there's no recovery path | Raised `max_iter` to 4 on affected agents |
 
 ### Category 2 — Broken & Harmful Prompts
 
 | Area | Bug | Fix |
 |---|---|---|
-| `investment_advisor` goal | Told to *"sell expensive products regardless of the document"*, *"make up connections between ratios"*, include *"fake market research"*. Backstory: *"learned from Reddit and YouTube"*, *"SEC compliance is optional"* | Rewrote as a certified professional grounding all observations in the document |
+| `investment_advisor` goal | Told to *"sell expensive products regardless of the document"*, *"make up connections between ratios"*, include *"fake market research"*. Backstory said it *"learned from Reddit and YouTube"* and *"SEC compliance is optional"* | Rewrote as a licensed analyst grounding all observations in the document |
 | `risk_assessor` goal | Told to *"ignore actual risk factors and create dramatic scenarios"*, *"market regulations are just suggestions"* | Rewrote to identify only risks explicitly stated in the filing |
-| Task descriptions | All four tasks assigned to `financial_analyst`. `investment_analysis` instructs agent to *"make up stock picks"* and recommend *"crypto from obscure exchanges"*. `risk_assessment` tells it to *"add fake research from made-up institutions"*. `verification` says to *"just say it's probably a financial document"* | Rewrote all tasks with strict document grounding; assigned each to its dedicated agent |
-| Dead code — `InvestmentTool`, `RiskTool` | Async class methods returning hardcoded strings; never assigned to any agent | Removed; agents receive `read_data_tool` directly |
+| Task descriptions | All four tasks assigned to `financial_analyst`. `investment_analysis` told the agent to *"make up stock picks"* and recommend *"crypto from obscure exchanges"*. `risk_assessment` said to *"add fake research from made-up institutions"*. `verification` said to *"just say it's probably a financial document"* | Rewrote all tasks with strict document grounding; assigned each to its dedicated agent |
+| Dead code — `InvestmentTool`, `RiskTool` | Async class methods returning hardcoded strings, never assigned to any agent | Removed; agents receive `read_data_tool` directly |
 | `max_iter=1, max_rpm=1` on all agents | One reasoning step total; 60-second stall between every API call | Raised to `max_iter=3–4`, `max_rpm=10` |
-| `allow_delegation=True` | Agents hand off tasks unpredictably in a deterministic pipeline | `allow_delegation=False` on all agents |
+| `allow_delegation=True` | Agents hand off tasks unpredictably in a sequential pipeline | `allow_delegation=False` on all agents |
 
 ---
 
 ## Dependency Resolution
 
-The original `requirements.txt` can't be installed with a plain `pip install` — it has a hard version conflict on `protobuf`:
+The original `requirements.txt` can't be installed with a plain `pip install` — there's a hard version conflict on `protobuf`:
 
 | Package group | Requires |
 |---|---|
 | OpenTelemetry ≥1.30, mem0ai | `protobuf >= 5` |
 | Google AI & Cloud SDKs | `protobuf < 5` |
 
-Full list of conflicts resolved:
+All conflicts resolved:
 
 | Issue | Fix |
 |---|---|
 | `onnxruntime==1.18.0` | Updated to `1.22.0` (CrewAI requirement) |
 | `pydantic==1.10.13` | Migrated to Pydantic v2 |
 | `opentelemetry==1.25.0` | Aligned to `1.30.0` |
-| Protobuf split | Pinned to `5.29.6` — Google SDKs work fine at runtime despite declared constraint |
+| Protobuf conflict | Pinned to `5.29.6` — Google SDKs work at runtime despite the declared constraint |
 | Explicit `click` pin | Removed — clashed with crewai-tools |
 | Explicit `google-api-core` pin | Removed — excluded certain `2.10.x` builds |
 | `embedchain` | Removed entirely — incompatible with crewai 0.130.0 |
@@ -247,10 +243,10 @@ Full list of conflicts resolved:
 **How the lockfile was built:**
 
 ```bash
-# Phase 1: resolve CrewAI's internal graph first
+# Step 1: resolve CrewAI's internal graph first
 pip install crewai==0.130.0 crewai-tools==0.47.1
 
-# Phase 2: install the rest without re-triggering the resolver
+# Step 2: add everything else without re-triggering the resolver
 pip install -r requirements.txt --no-deps
 
 pip freeze > requirements.lock
@@ -266,40 +262,39 @@ pip install -r requirements.lock --no-deps
 
 ---
 
-## Bonus: Queue Worker & Database
+## Queue Worker & Database
 
-Processing takes **1–2 minutes**. Jobs run in the background so the API stays non-blocking:
+The assignment asked for Redis + Celery to handle concurrent requests so that was implemented as well. Multiple users can submit PDFs at the same time; each request becomes an independent Celery task with its own job ID tracked in MongoDB. The API responds in under 100ms regardless of how many jobs are in flight — analysis runs entirely in the background.
 
 ```
-POST /analyze  →  enqueue job  →  return job_id in < 100ms
-GET /results/{job_id}  →  poll MongoDB for result
+POST /analyze  →  save file, enqueue job, return job_id  (<100ms)
+GET /results/{job_id}  →  poll MongoDB until status is "done"
 ```
 
-Jobs are stored in MongoDB with full lifecycle tracking:
+Jobs track their full lifecycle:
 
 ```json
 {
   "job_id": "uuid",
   "status": "pending | processing | done | failed",
   "query": "What are the key risks?",
-  "file_path": "/absolute/path/to/financial_document_abc123.pdf",
   "result": "...",
   "created_at": "2026-02-27T12:08:14Z",
   "completed_at": "2026-02-27T12:09:59Z"
 }
 ```
 
-**Why two MongoDB drivers?** FastAPI uses **Motor** (async) — a sync driver would block the event loop. Celery uses **PyMongo** (sync) — async drivers deadlock in forked worker processes.
+**Why two MongoDB drivers?** FastAPI uses **Motor** (async) — a sync driver would block the event loop. Celery uses **PyMongo** (sync) — Motor binds to an event loop at creation, which doesn't exist in forked Celery worker processes.
 
 ---
 
 ## Frontend
 
-`index.html` is a single-file dark-mode UI — no install, no build step, just open it in a browser while the API is running. It was built with LLM assistance to make testing and tracking easier without touching `curl`.
+`index.html` is a single-file dark-mode UI — no install, no build step. Open it directly in a browser while the API is running. Built with LLM to make testing easier without touching `curl`.
 
 **Features:** drag-and-drop upload · preset query buttons · live polling with agent step view · word count and duration stats · one-click copy
 
-**To use:** start the API and worker, then open `index.html` directly in your browser. The endpoint defaults to `http://localhost:8000`.
+The API endpoint defaults to `http://localhost:8000` and can be changed from the UI.
 
 ### Screenshots
 
@@ -313,24 +308,22 @@ Jobs are stored in MongoDB with full lifecycle tracking:
 
 ## Limitations
 
-**Processing time: ~1–2 minutes per document.** The four-agent sequential pipeline makes multiple LLM calls per agent. Based on a real Tesla Q2 2025 earnings PDF run, total time was ~106 seconds. This is expected — the trade-off for grounded, multi-perspective analysis is latency.
+**Processing time is ~1–2 minutes.** Four agents run sequentially and each makes multiple LLM calls. A real run against Tesla's Q2 2025 earnings PDF took 106 seconds end-to-end. That's the trade-off for grounded, multi-perspective analysis.
 
-| Agent | What it does | Why it's slow |
-|---|---|---|
-| Financial Analyst | Reads PDF + Serper search | PDF parse + 2 LLM reasoning steps |
-| Verifier | Reviews analyst output | 1 LLM call |
-| Investment Advisor | Reads PDF again for metrics | Separate PDF parse + LLM |
-| Risk Assessor | Reads PDF again for risks | Separate PDF parse + LLM |
+| Agent | Bottleneck |
+|---|---|
+| Financial Analyst | PDF parse + web search + 2–3 LLM reasoning steps |
+| Verifier | 1 LLM call |
+| Investment Advisor | PDF parse again + LLM |
+| Risk Assessor | PDF parse again + LLM |
 
-**Polling is manual.** The frontend polls `/results/{job_id}` on an interval. There's no WebSocket push — refresh the result panel after ~90 seconds if you don't see output.
+**Polling is manual.** The frontend polls on an interval — no WebSocket push. If results don't appear, wait ~90 seconds and check again.
 
-**Single document per job.** The API accepts one PDF per request. Multi-document comparison would require a new endpoint and crew design.
+**PDF only.** `read_data_tool` uses `PyPDFLoader` and won't handle `.xlsx`, `.docx`, or image-based scans (no OCR).
 
-**No authentication.** The API has no auth layer. Don't expose it publicly without adding one.
+**No auth.** There's no authentication layer — don't expose the API publicly without adding one.
 
-**CORS is restricted to localhost.** If you host `index.html` on GitHub Pages, requests to a local API will be blocked. Either open CORS (`allow_origins=["*"]`) or run both on the same machine.
-
-**PDF only.** The `read_data_tool` uses `PyPDFLoader` — it won't handle `.xlsx`, `.docx`, or image-based scans (no OCR).
+**CORS is localhost-only.** `index.html` is hosted on GitHub Pages for demo purposes before prod needs to be configured properly
 
 ---
 
@@ -339,21 +332,21 @@ Jobs are stored in MongoDB with full lifecycle tracking:
 ```
 financial-document-analyzer-debug/
 ├── main.py              # FastAPI app — endpoints, file upload, job queuing
-├── worker.py            # Celery task — runs CrewAI pipeline in background
+├── worker.py            # Celery task — runs CrewAI pipeline in the background
 ├── crew.py              # run_crew() — assembles agents, tasks, and calls kickoff()
 ├── agents.py            # financial_analyst, verifier, investment_advisor, risk_assessor
 ├── task.py              # Four CrewAI tasks with grounded descriptions
 ├── tools.py             # read_data_tool (PDF) + search_tool (Serper)
 ├── database.py          # Motor (async) MongoDB client + Pydantic job schemas
 ├── index.html           # Single-file dark-mode frontend
-├── Makefile             # make api / make worker
+├── Makefile             # make api / make worker / make dev
 ├── .env.example         # Environment variable template
 ├── requirements.txt     # Direct dependencies
-├── requirements.lock    # Frozen, pre-resolved — always use this to install
-├── BUGS.md              # Full bug documentation with diffs and explanations
+├── requirements.lock    # Frozen, pre-resolved — always install from this
+├── bugs.md              # Full bug documentation with diffs and explanations
 ├── data/                # Uploaded PDFs saved here at runtime (auto-created)
-├── outputs/             # CrewAI internal output cache (auto-created, not used by app)
-└── screenshots/         # UI screenshots for README
+├── outputs/             # CrewAI internal cache (auto-created, not used by the app)
+└── screenshots/
     ├── initial.png
     ├── running.png
     └── output.png
