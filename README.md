@@ -44,10 +44,10 @@ flowchart TD
     Celery --> CrewAI
 
     subgraph CrewAI ["CrewAI Pipeline (sequential)"]
-        A1["1. Senior Financial Analyst\n─ read_data_tool\n─ search_tool (Serper)"]
-        A2["2. Investment Advisor\n─ read_data_tool"]
-        A3["3. Risk Assessor\n─ read_data_tool"]
-        A4["4. Financial Verifier\n─ no tools, reads context"]
+        A1["1. Senior Financial Analyst─ read_data_tool\n─ search_tool (Serper)"]
+        A2["2. Investment Advisor─ read_data_tool"]
+        A3["3. Risk Assessor─ read_data_tool"]
+        A4["4. Financial Verifier─ no tools, reads context"]
         A1 --> A2 --> A3 --> A4
     end
     
