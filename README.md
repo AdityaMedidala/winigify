@@ -229,7 +229,7 @@ Health check — `{ "message": "Financial Document Analyzer API is running" }`
 
 ## Bugs Fixed
 
-17 bugs total. See [`bugs.md`](bugs.md) for the full breakdown with diffs and context.
+18 bugs total. See [`bugs.md`](bugs.md) for the full breakdown with diffs and context.
 
 ### Category 1 — Crashes & Hard Failures
 
@@ -252,7 +252,7 @@ Health check — `{ "message": "Financial Document Analyzer API is running" }`
 | 15 | `task.py` + `agents.py` | Verification task assigned to `financial_analyst` — same agent, same tool, same input path hits duplicate-input guard and loops indefinitely | Reassigned to `verifier` agent with no tools |
 | 16 | `main.py` | File saved with a relative path — Celery's working directory differs from uvicorn's, so the file isn't found | Used `os.path.abspath()` when saving |
 | 17 | `agents.py` + `task.py` | `investment_advisor` re-calls `read_data_tool` on iteration 2 — duplicate-input guard blocks it, and with `max_iter=2` there's no recovery path | Raised `max_iter` to 4 on affected agents |
-
+| 18 | `worker.py` | File cleanup only ran on success — failed jobs left uploaded PDFs on disk permanently | Moved `os.remove()` to a `finally` block so cleanup runs regardless of outcome |
 ### Category 2 — Broken & Harmful Prompts
 
 | Area | Bug | Fix |
@@ -343,7 +343,7 @@ The API endpoint defaults to `http://localhost:8000` and can be changed from the
 
 ## Limitations
 
-**Processing time is ~1–2 minutes.** Four agents run sequentially and each makes multiple LLM calls. A real run against Tesla's Q2 2025 earnings PDF took 106 seconds end-to-end. That's the trade-off for grounded, multi-perspective analysis.
+**Processing time is ~45–60 seconds.** Four agents run sequentially and each makes multiple LLM calls. A real run against Tesla's Q2 2025 earnings PDF took 45 seconds end-to-end. That's the trade-off for grounded, multi-perspective analysis.
 
 | Agent | Bottleneck |
 |---|---|
@@ -359,6 +359,13 @@ The API endpoint defaults to `http://localhost:8000` and can be changed from the
 **No auth.** There's no authentication layer — don't expose the API publicly without adding one.
 
 **CORS is open.** `allow_origins=["*"]` is already set in `main.py` so the frontend works from any origin including GitHub Pages. Fine for local dev — add restrictions if you ever expose this publicly.
+
+**No file size limit.** Large PDFs (200+ pages) are loaded entirely into context — 
+this can hit the model's context window limit. A 50-page max is a reasonable practical ceiling.
+
+**No upload size guard.** There's no server-side file size cap. A 100MB upload will 
+block the async endpoint during `await file.read()`. Add `MAX_UPLOAD_MB` gating if 
+exposing publicly.
 
 ---
 

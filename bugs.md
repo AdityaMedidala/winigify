@@ -158,6 +158,40 @@ With `max_iter=2`, there was no iteration left to recover — so the agent loope
 
 Fix: raised `max_iter` to 4 on `financial_analyst` and 3 on `investment_advisor`/`risk_assessor` to give agents room to recover. Added an explicit instruction to task descriptions: `"Do not call the tool a second time — all the information you need is in the first read."` This prevents the second call from ever being attempted.
 
+
+Here's the entry in exact format:
+
+---
+
+**Bug 18 — File cleanup only runs on success** · `worker.py`
+
+`os.remove()` was placed inside the `try` block after `_set_done()`. If the Celery task raised an exception, execution jumped to `except` and returned — the cleanup code was never reached. Every failed job left its uploaded PDF on disk permanently.
+
+Fix: moved `os.remove()` to a `finally` block so the file is deleted regardless of whether the task succeeded or failed.
+
+```python
+# Before
+        _set_done(job_id, result)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+    except Exception as e:
+        _set_failed(job_id, str(e))
+        raise
+
+# After
+        _set_done(job_id, result)
+
+    except Exception as e:
+        _set_failed(job_id, str(e))
+        raise
+
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+```
+
+
 ---
 
 ## Category 2 — Broken & Harmful Prompts
@@ -211,3 +245,4 @@ Fix: `max_iter` raised to 3–4 and `max_rpm` raised to 10 across all agents.
 `allow_delegation=True` on the original agents (CrewAI's default) lets agents hand work off to each other mid-task unpredictably. For a deterministic four-step sequential pipeline this adds non-deterministic routing and extra LLM calls.
 
 Fix: `allow_delegation=False` on all agents.
+

@@ -29,6 +29,10 @@ async def api_financial_document(
     file: UploadFile = File(...),
     query: str = Form(default="Analyze this financial document for investment insights"),
 ):
+    #file validation
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
     job_id = str(uuid.uuid4())
     # Use absolute path so Celery workers (different cwd) always find the file
     base_dir = os.path.dirname(os.path.abspath(__file__))

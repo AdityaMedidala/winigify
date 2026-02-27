@@ -86,11 +86,11 @@ def analyze_document_task(self, job_id: str, query: str, file_path: str):
         result = run_crew(query=query, file_path=file_path)
 
         _set_done(job_id, result)
-
-        # Clean up the uploaded PDF after successful analysis
+    except Exception as e:
+        _set_failed(job_id, str(e))
+        raise
+    finally:
         if os.path.exists(file_path):
             os.remove(file_path)
 
-    except Exception as e:
-        _set_failed(job_id, str(e))
-        raise  # let Celery mark the task FAILURE in its own backend too
+
