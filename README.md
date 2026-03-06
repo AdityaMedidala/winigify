@@ -1,6 +1,18 @@
 # Financial Document Analyzer
 
-Upload a financial PDF, ask a question, get a grounded answer. Four AI agents read the document and work through it in sequence — no hallucinated figures, no speculation.
+Upload a financial PDF, ask a question, get a grounded answer. Four AI agents read the document and work through it in sequence 
+
+Originally developed as a debugging challenge to fix 18 
+critical bugs in a broken multi-agent system, then enhanced 
+with production features.
+
+> **TL;DR** — Fixed 18 bugs (crashes, broken imports, hallucinating prompts) in a 
+> CrewAI-based financial document analysis system. Added Celery + Redis queue for 
+> Rewrote unsafe agent prompts to enforce document grounding
+> Ensured file safety and cleanup across worker failures
+> concurrent requests and MongoDB for persistent job storage. FastAPI backend, 
+> fully documented below.
+
 
 Built with **CrewAI · FastAPI · Celery · Redis · MongoDB · GPT-4o-mini · SerperDev**
 
